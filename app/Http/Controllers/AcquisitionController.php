@@ -1,0 +1,184 @@
+<?php
+
+namespace App\Http\Controllers;
+
+use App\Models\Exhibition;
+use App\Models\Loan;
+use App\Models\Reservation;
+use App\Models\Restoration;
+use Illuminate\Http\Request;
+use App\Models\Acquisition;
+use App\Http\Controllers\Inventory_noticeController;
+use Illuminate\Support\Facades\Auth;
+
+
+class AcquisitionController extends Controller
+{
+
+    public function index()
+    {
+        $acquisitions = Acquisition::all();
+
+        return view('acquisitions.list', compact('acquisitions'));
+    }
+
+    public function filter(Request $request)
+    {
+        $query = $request->get('creator');
+        if ($query) {
+            if ($query == "Mine") {
+                $user_id = Auth::id();
+                $acquisitions = Acquisition::where('user_id', $user_id)->get();
+            } else {
+                $acquisitions = Acquisition::all();
+            }
+        } else {
+            $acquisitions = Acquisition::all();
+        }
+        return view('acquisitions.list', compact('acquisitions'));
+    }
+
+
+    public function search(Request $request)
+    {
+        $query = $request->get('query');
+        if (strpos($query, 'Acquisition Method :') !== false) {
+            $search = str_replace('Acquisition Method :', '', $query);
+        } else if (strpos($query, 'Acquisition Location :') !== false) {
+            $search = str_replace('Acquisition Location :', '', $query);
+        } else if (strpos($query, 'Current Owner :') !== false) {
+            $search = str_replace('Current Owner :', '', $query);
+        } else {
+            $search = $query;
+        }
+
+        $acquisitions = Acquisition::where('acquisition_location', 'like', "%$search%")->orWhere('current_owner', 'like', "%$search%")->orWhere('acquisition_method', 'LIKE', "%$search%")->get();
+
+        return view('acquisitions.list', compact('acquisitions'));
+    }
+    public function autocomplete(Request $request)
+    {
+        $query = $request->get('query');
+        $filterResult = Acquisition::where('acquisition_location', 'LIKE', "%$query%")->orWhere('current_owner', 'LIKE', "%$query%")->orWhere('acquisition_method', 'LIKE', "%$query%")->get();
+        $acquisitions = array();
+        foreach ($filterResult as $acquisition) {
+            if (strpos($acquisition->acquisition_location, $query) !== false) {
+                array_push($acquisitions, "Acquisition Location :" . $acquisition->acquisition_location);
+            } else if (strpos($acquisition->current_owner, $query) !== false) {
+                array_push($acquisitions, "Current Owner :" . $acquisition->current_owner);
+            } else {
+                array_push($acquisitions, "Acquisition Method :" . $acquisition->acquisition_method);
+            }
+        }
+        return response()->json($acquisitions);
+    }
+
+    public function create()
+    {
+        return view('acquisitions.create');
+    }
+
+    public function store(Request $request)
+    {
+        $artwork_id = $request->artwork_id;
+        $existingLoan = Loan::where('artwork_id', $request->artwork_id)
+            ->where('return_date', '>', date('Y-m-d'))
+            ->first();
+        if ($existingLoan) {
+            return redirect()->back()->withErrors(['error' => 'An existing loan for this artwork has not yet ended.']);
+        }
+
+        $existingReservation = Reservation::where('artwork_id', $artwork_id)
+            ->first();
+
+        if ($existingReservation) {
+            return redirect()->back()->withErrors(['error' => 'This Artwork Is Reserved']);
+        }
+
+        $existingAcquisition = Acquisition::where('artwork_id', $artwork_id)
+            ->first();
+
+        if ($existingAcquisition) {
+            return redirect()->back()->withErrors(['error' => 'This Artwork Has Been Acquired']);
+        }
+
+        $existingRestoration = Restoration::where('artwork_id', $artwork_id)
+            ->where(function ($query) {
+                $query->whereNull('end_date')
+                    ->orWhere('end_date', '>', date('Y-m-d'));
+            })
+            ->first();
+
+        if ($existingRestoration) {
+            return redirect()->back()->withErrors(['error' => 'This Artwork Is In Restoration']);
+        }
+
+        $existingExhibition = Exhibition::where('artwork_id', $artwork_id)
+            ->where(function ($query) {
+                $query->whereNull('end_date')
+                    ->orWhere('end_date', '>', date('Y-m-d'));
+            })
+            ->first();
+
+        if ($existingExhibition) {
+            return redirect()->back()->withErrors(['error' => 'This Artwork Is In Exhibition']);
+        }
+        $acquisition = new Acquisition();
+        $acquisition->fill($request->all());
+        $user_id = Auth::id();
+        $acquisition->user_id = $user_id;
+        $acquisition->save();
+
+        $request_notice = new Request();
+        $request_notice->replace(['artwork_id' => $request->input('artwork_id')]);
+        (new Inventory_noticeController)->store($request_notice);
+
+        return redirect('acquisition');
+    }
+
+
+    public function show(Acquisition $acquisition)
+    {
+        return 2;
+    }
+
+
+    public function edit($id)
+    {
+        $acquisition = Acquisition::find($id);
+        if (Auth::user()->id !== $acquisition->user_id && Auth::user()->role != "superadmin") {
+            return view('errors.error');
+        }
+        return view('acquisitions.edit', compact('acquisition'));
+    }
+
+    public function update(Request $request, $id)
+    {
+        $acquisition = Acquisition::findOrFail($id);
+        $acquisition = $acquisition->fill($request->all());
+        if ($acquisition->isClean()) {
+            return redirect()->back()->withErrors(['error' => 'Atleast Something Has To Be Modified']);
+        }
+
+        $acquisition->save();
+
+        $request_notice = new Request();
+        $request_notice->replace(['artwork_id' => $request->input('artwork_id')]);
+        (new Inventory_noticeController)->store($request_notice);
+
+        return redirect('acquisition');
+    }
+
+
+    public function destroy($id)
+    {
+        $acquisition = Acquisition::findOrFail($id);
+        if (Auth::user()->id !== $acquisition->user_id && Auth::user()->role != "superadmin") {
+            return view('errors.error');
+        }
+        $acquisition->delete();
+        return redirect('acquisition');
+
+
+    }
+}
